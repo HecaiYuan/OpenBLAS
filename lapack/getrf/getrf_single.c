@@ -40,7 +40,13 @@
 #include "common.h"
 
 #define GEMM_PQ  MAX(GEMM_P, GEMM_Q)
-#define REAL_GEMM_R (GEMM_R - GEMM_PQ)
+
+/* Single-panel user (TRSM/GEMM updates): need GEMM_R > GEMM_PQ. */
+#if GEMM_R <= GEMM_PQ
+#  define REAL_GEMM_R  0
+#else
+#  define REAL_GEMM_R (GEMM_R - GEMM_PQ)
+#endif
 
 static FLOAT dm1 = -1.;
 
@@ -88,6 +94,12 @@ blasint CNAME(blas_arg_t *args, BLASLONG *range_m, BLASLONG *range_n, FLOAT *sa,
     return info;
   }
 #endif
+
+  /* Run-time safety net: same rationale as potrf_L_single.c. */
+  if (REAL_GEMM_R <= 0) {
+    info = GETF2(args, NULL, range_n, sa, sb, 0);
+    return info;
+  }
 
   sbb = (FLOAT *)((((BLASULONG)(sb + blocking * blocking * COMPSIZE) + GEMM_ALIGN) & ~GEMM_ALIGN) + GEMM_OFFSET_B);
 

@@ -1092,6 +1092,52 @@ static void init_parameter(void) {
 				 + TABLE_NAME.align) & ~TABLE_NAME.align)
 			       ) / (TABLE_NAME.zgemm_q * 16) - 15) & ~15);
 
+  /* --- GEMM_R_FLOOR guard ------------------------------------------------
+   *
+   * potrf_L_single.c:71 requires
+   *     REAL_GEMM_R = GEMM_R - 2*MAX(P,Q)  > 0
+   * otherwise min_j at line 137 becomes negative → SYRK kernel N<0 →
+   * segfault, or with REAL_GEMM_R == 0 the panel loop at line 192
+   * never advances (js += 0) → multi-thread livelock / hang.
+   *
+   * The U variant (potrf_U_single.c:69), lauum_*, getrf_* only need
+   *     GEMM_R - MAX(P,Q)  > 0,
+   * so the stricter L form is used as the global constraint.  A
+   * generous margin (GEMM_R_FLOOR_MARGIN) is added so future P/Q
+   * tuning or BUFFER_SIZE/NUM_THREADS ratio changes do not silently
+   * regress into the danger zone again.
+   * --------------------------------------------------------------------- */
+#ifndef GEMM_R_FLOOR_MARGIN
+#define GEMM_R_FLOOR_MARGIN 160
+#endif
+  {
+    int pq, floor_r, step;
+    /* s / d / c / z:  use the L-variant constraint so all four users
+       (potrf_L/U, lauum_L/U, getrf) are simultaneously satisfied. */
+    step = 16;  /* matches the -15 & ~15 rounding step above */
+
+#define GUARD_PQ(R, P, Q) do {                                            \
+    pq = ((P) > (Q)) ? (P) : (Q);                                         \
+    floor_r = 2 * pq + GEMM_R_FLOOR_MARGIN;                               \
+    /* round floor_r up to the next multiple of step so that the          \
+       existing "-15 & ~15" invariant is preserved */                     \
+    floor_r = ((floor_r + step - 1) / step) * step;                       \
+    if ((R) < floor_r) (R) = floor_r;                                     \
+  } while(0)
+
+    GUARD_PQ(TABLE_NAME.sgemm_r, TABLE_NAME.sgemm_p, TABLE_NAME.sgemm_q);
+    GUARD_PQ(TABLE_NAME.dgemm_r, TABLE_NAME.dgemm_p, TABLE_NAME.dgemm_q);
+    GUARD_PQ(TABLE_NAME.cgemm_r, TABLE_NAME.cgemm_p, TABLE_NAME.cgemm_q);
+    GUARD_PQ(TABLE_NAME.zgemm_r, TABLE_NAME.zgemm_p, TABLE_NAME.zgemm_q);
+#ifdef EXPRECISION
+    GUARD_PQ(TABLE_NAME.qgemm_r, TABLE_NAME.qgemm_p, TABLE_NAME.qgemm_q);
+    GUARD_PQ(TABLE_NAME.xgemm_r, TABLE_NAME.xgemm_p, TABLE_NAME.xgemm_q);
+#endif
+    /* cgemm3m / zgemm3m / xgemm3m are not consumed by potrf/lauum/getrf
+       so they are left untouched; re-activate below if a new user appears. */
+#undef GUARD_PQ
+  }
+
   TABLE_NAME.cgemm3m_r = (((BUFFER_SIZE -
 			       ((TABLE_NAME.cgemm3m_p * TABLE_NAME.cgemm3m_q *  8 + TABLE_NAME.offsetA
 				 + TABLE_NAME.align) & ~TABLE_NAME.align)

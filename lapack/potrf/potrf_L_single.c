@@ -67,8 +67,33 @@ static FLOAT dm1 = -1.;
 
 #define GEMM_PQ  MAX(GEMM_P, GEMM_Q)
 
+/*
+ * REAL_GEMM_R is the number of trailing columns (for this blocked POTRF
+ * algorithm) that can be processed while still leaving enough scratch
+ * space for two SYRK/GEMM panel updates, each of size at most GEMM_PQ.
+ *
+ * It MUST be strictly positive.  If the compile-time or run-time
+ * selected GEMM_R is too small (<= 2*GEMM_PQ) we silently fall back to
+ * the unblocked POTF2 path instead of computing a negative / zero
+ * REAL_GEMM_R, which previously caused:
+ *   - segfault: min_j < 0 at line 137 forwarded to SYRK as a negative
+ *               dimension, driving the DGEMM kernel to compute invalid
+ *               addresses and SIGSEGV on xvld (LA464, N >= DTB_ENTRIES/2).
+ *   - hang:     the panel loop for(js=...; js<n; js+=REAL_GEMM_R) never
+ *               advances when REAL_GEMM_R == 0, degenerating into a
+ *               multi-thread livelock under USE_OPENMP.
+ *
+ * The setparam-ref.c GEMM_R_FLOOR guard at run-time is the primary
+ * defence; this compile-time clamp is the last line so even custom
+ * parameter overrides (e.g. via -DGEMM_R=...) do not re-trigger either
+ * bug.
+ */
+#if GEMM_R <= 2 * GEMM_PQ
+#  define REAL_GEMM_R  0   /* forces the blocked-path safety check below */
+#else
 //leave some space for GEMM_ALIGN in sb2
-#define REAL_GEMM_R (GEMM_R - 2*GEMM_PQ)
+#  define REAL_GEMM_R (GEMM_R - 2*GEMM_PQ)
+#endif
 
 #if 0
 #define SHARED_ARRAY
@@ -107,6 +132,15 @@ blasint CNAME(blas_arg_t *args, BLASLONG *range_m, BLASLONG *range_n, FLOAT *sa,
   }
 
   if (n <= DTB_ENTRIES / 2) {
+    info = POTF2_L(args, NULL, range_n, sa, sb, 0);
+    return info;
+  }
+
+  /* Run-time safety net: mirror the compile-time REAL_GEMM_R check.
+     With the per-runtime-table guard in setparam-ref.c this should
+     never fire, but it closes the gap if someone calls through the
+     gotoblas pointers with a manually-constructed table.         */
+  if (REAL_GEMM_R <= 0) {
     info = POTF2_L(args, NULL, range_n, sa, sb, 0);
     return info;
   }

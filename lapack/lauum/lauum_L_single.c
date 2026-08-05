@@ -66,7 +66,14 @@ static FLOAT dp1 =  1.;
 #endif
 
 #define GEMM_PQ  MAX(GEMM_P, GEMM_Q)
-#define REAL_GEMM_R (GEMM_R - GEMM_PQ)
+
+/* Same logic as potrf_U_single.c: single-panel GEMM user, need
+   GEMM_R > GEMM_PQ.  Fall back when the constraint is violated. */
+#if GEMM_R <= GEMM_PQ
+#  define REAL_GEMM_R  0
+#else
+#  define REAL_GEMM_R (GEMM_R - GEMM_PQ)
+#endif
 
 blasint CNAME(blas_arg_t *args, BLASLONG *range_m, BLASLONG *range_n, FLOAT *sa, FLOAT *sb, BLASLONG myid) {
 
@@ -98,6 +105,12 @@ blasint CNAME(blas_arg_t *args, BLASLONG *range_m, BLASLONG *range_n, FLOAT *sa,
   }
 
   if (n <= DTB_ENTRIES) {
+    LAUU2_L(args, NULL, range_n, sa, sb, 0);
+    return 0;
+  }
+
+  /* Run-time safety net (see potrf_L_single.c for rationale). */
+  if (REAL_GEMM_R <= 0) {
     LAUU2_L(args, NULL, range_n, sa, sb, 0);
     return 0;
   }

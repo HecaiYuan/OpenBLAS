@@ -66,7 +66,18 @@ static FLOAT dm1 = -1.;
 #endif
 
 #define GEMM_PQ  MAX(GEMM_P, GEMM_Q)
-#define REAL_GEMM_R (GEMM_R - GEMM_PQ)
+
+/*
+ * U variant: single SYRK/TRSM panel, so REAL_GEMM_R only needs
+ * GEMM_R - GEMM_PQ > 0.  Guard the same way as potrf_L_single.c:
+ * fall back to unblocked POTF2 instead of computing a negative / zero
+ * stride which would cause segfaults or hangs in the panel loop.
+ */
+#if GEMM_R <= GEMM_PQ
+#  define REAL_GEMM_R  0
+#else
+#  define REAL_GEMM_R (GEMM_R - GEMM_PQ)
+#endif
 
 #if 0
 #define SHARED_ARRAY
@@ -106,6 +117,12 @@ blasint CNAME(blas_arg_t *args, BLASLONG *range_m, BLASLONG *range_n, FLOAT *sa,
   }
 
   if (n <= DTB_ENTRIES / 2) {
+    info = POTF2_U(args, NULL, range_n, sa, sb, 0);
+    return info;
+  }
+
+  /* Run-time safety net (see potrf_L_single.c for full rationale). */
+  if (REAL_GEMM_R <= 0) {
     info = POTF2_U(args, NULL, range_n, sa, sb, 0);
     return info;
   }
